@@ -12,11 +12,13 @@
 #define ALIGN1(x) (((x) & ~(ALIGNMENT - 1)) + ALIGNMENT * !!((x) & (ALIGNMENT -1)))
 #define ALIGN2(x) (((x) + (ALIGNMENT - 1)) & ~(ALIGNMENT -1))
 
+typedef unsigned long long ull;
 
 typedef struct memblock_t {
     struct memblock_t *next;
     struct memblock_t *prev;
     int size;
+    int block_size;
     unsigned long chksum;
 } block;
 

@@ -16,6 +16,69 @@ static void* start_brk = NULL;
  * */
 
 // TODO Should each block size include size of the fences and next header or only user data?
+
+uint32_t murmurhash (const char *key, uint32_t len, uint32_t seed) {
+    uint32_t c1 = 0xcc9e2d51;
+    uint32_t c2 = 0x1b873593;
+    uint32_t r1 = 15;
+    uint32_t r2 = 13;
+    uint32_t m = 5;
+    uint32_t n = 0xe6546b64;
+    uint32_t h = 0;
+    uint32_t k = 0;
+    uint8_t *d = (uint8_t *) key; // 32 bit extract from `key'
+    const uint32_t *chunks = NULL;
+    const uint8_t *tail = NULL; // tail - last 8 bytes
+    int i = 0;
+    int l = len / 4; // chunk length
+
+    h = seed;
+
+    chunks = (const uint32_t *) (d + l * 4); // body
+    tail = (const uint8_t *) (d + l * 4); // last 8 byte chunk of `key'
+
+    // for each 4 byte chunk of `key'
+    for (i = -l; i != 0; ++i) {
+        // next 4 byte chunk of `key'
+        k = chunks[i];
+
+        // encode next 4 byte chunk of `key'
+        k *= c1;
+        k = (k << r1) | (k >> (32 - r1));
+        k *= c2;
+
+        // append to hash
+        h ^= k;
+        h = (h << r2) | (h >> (32 - r2));
+        h = h * m + n;
+    }
+
+    k = 0;
+
+    // remainder
+    switch (len & 3) { // `len % 4'
+        case 3: k ^= (tail[2] << 16);
+        case 2: k ^= (tail[1] << 8);
+
+        case 1:
+            k ^= tail[0];
+            k *= c1;
+            k = (k << r1) | (k >> (32 - r1));
+            k *= c2;
+            h ^= k;
+    }
+
+    h ^= len;
+
+    h ^= (h >> 16);
+    h *= 0x85ebca6b;
+    h ^= (h >> 13);
+    h *= 0xc2b2ae35;
+    h ^= (h >> 16);
+
+    return h;
+}
+
 int heap_setup(void){
     start_brk = custom_sbrk(0);
     if(custom_sbrk(PAGE_SIZE) == ((void *)-1))
@@ -38,7 +101,7 @@ int heap_setup(void){
     front_guard->next = usable_block;
     front_guard->prev = NULL;
 
-    usable_block->chksum = front_guard->size + tail_guard->size;
+    usable_block->chksum = front_guard->size + tail_guard->size + usable_block->size;
     front_guard->chksum = usable_block->size;
     tail_guard->chksum = usable_block->size;
 
@@ -55,32 +118,22 @@ void heap_clean(void){
     custom_sbrk(-size);
     start_brk = NULL;
 }
-int extend_heap(void){
-    if(custom_sbrk(PAGE_SIZE) == ((void *)-1))
-        return -1;
-    block *iterator = (block *)start_brk;
-    while(iterator->next != NULL){
-        iterator = iterator->next;
+
+long long simple_hash(block *iterator, int isNull){
+    long long checksum = 0;
+    if(isNull){
+        block *previous = iterator->prev, *cur = iterator, *next = iterator->next;
+        checksum = (previous->size + &previous->next / 10000 + previous->prev / 10000 + previous->block_size);
     }
+    else{
 
-    ssize_t placement = (unsigned char *)custom_sbrk(0) - (unsigned char *)start_brk - (sizeof(block));
-    block *new_plug = (block *)(((unsigned char*)(start_brk)) + placement);
-    new_plug->prev = iterator->prev;
-    new_plug->next = NULL;
-    new_plug->size = 0;
-
-    iterator->prev->next = new_plug;
-    iterator->prev->size = iterator->prev->size - PAGE_SIZE + sizeof(block); // - or +?
-    iterator->prev->block_size = iterator->prev->size; // - or +?
-
-    new_plug->chksum = new_plug->prev->size;
-    iterator->prev->chksum = iterator->prev->prev->size + iterator->prev->next->size;
-
-    return 0;
+    }
 }
 
-void correct_validation(block *iterator, int with_new_header){
+void correct_validation(block *iterator, int with_new_header, block *new_header){
+    iterator->chksum = (iterator->prev->size) + (iterator->next->size) + (iterator->size);
     if(with_new_header) {
+        new_header->chksum = new_header->prev->size + new_header->next->size + new_header->size;
         if (iterator->prev->prev != NULL) {
             iterator->prev->chksum = iterator->prev->prev->size + iterator->size + iterator->prev->size;
         } else {
@@ -105,6 +158,60 @@ void correct_validation(block *iterator, int with_new_header){
         }
     }
 }
+int extend_heap(void){
+    unsigned char *cur_sbrk = (unsigned char*)custom_sbrk(0);
+    (void)cur_sbrk;
+    if(custom_sbrk(PAGE_SIZE) == ((void *)-1))
+        return -1;
+    block *iterator = (block *)start_brk;
+    while(iterator->next != NULL){
+        iterator = iterator->next;
+    }
+
+
+
+    ssize_t placement = (unsigned char *)custom_sbrk(0) - (unsigned char *)start_brk - (sizeof(block));
+    block *new_plug = (block *)(((unsigned char*)(start_brk)) + placement);
+    if(iterator->prev->block_size > 0){
+        unsigned char *char_iterator = (unsigned char *)iterator->prev;
+        char_iterator+=sizeof(block);
+        char_iterator+=iterator->prev->block_size;
+        block *new_header = ((block *) char_iterator);
+        char_iterator+=sizeof(block);
+
+        new_plug->prev = new_header;
+        new_plug->next = NULL;
+        new_plug->size = 0;
+
+        new_header->prev = iterator->prev;
+        new_header->next = new_plug;
+
+        iterator->prev->next = new_header;
+
+        new_header->size = -(int) ((unsigned char *)new_plug - sizeof(block) - char_iterator);
+        new_header->block_size = -(int) ((unsigned char *)new_plug - sizeof(block) - char_iterator);
+
+        correct_validation(new_header, 0, NULL);
+    }
+    else{
+        new_plug->prev = iterator->prev;
+        new_plug->next = NULL;
+        new_plug->size = 0;
+
+        iterator->prev->next = new_plug;
+        iterator->prev->size = iterator->prev->size - PAGE_SIZE + sizeof(block); // - or +?
+        iterator->prev->block_size = iterator->prev->size; // - or +?
+
+        block *before_end = iterator->prev;
+        //new_plug->chksum = new_plug->prev->size;
+        //before_end->chksum = before_end->prev->size + before_end->size + before_end->next->size;
+        correct_validation(before_end, 0, NULL);
+    }
+
+    return 0;
+}
+
+
 
 void *first_free(block *iterator, size_t size){
     while(iterator->next != NULL){
@@ -123,7 +230,7 @@ void *first_free(block *iterator, size_t size){
             char_iterator += ALIGN1(size) - size;
 
             //block new_header = {.prev = iterator, .next = iterator->next, .size = -(int)(iterator->size - sizeof(block) - FENCE_SIZE*2 - ALIGN1(size) - size) , .block_size = -(int)(iterator->size - sizeof(block) - FENCE_SIZE*2 - ALIGN1(size) - size)};
-            if(-iterator->size >= (int)(ALIGN1(size) + FENCE_SIZE + FENCE_SIZE + (sizeof(block) + FENCE_SIZE + FENCE_SIZE + 1 ))) {
+            if(-iterator->size >= (int)(ALIGN1(size) + FENCE_SIZE + FENCE_SIZE + (sizeof(block) + FENCE_SIZE + FENCE_SIZE + 1))) {
                 block *new_header = ((block *) char_iterator);
 
                 new_header->prev = iterator;
@@ -138,16 +245,17 @@ void *first_free(block *iterator, size_t size){
                 iterator->block_size = ALIGN1(size) + FENCE_SIZE*2;
 
                 //Validation add
-                iterator->chksum = iterator->prev->size + iterator->next->size + iterator->size;
-                new_header->chksum = new_header->prev->size + new_header->next->size + new_header->size;
-                correct_validation(iterator,1);
+                //iterator->chksum = iterator->prev->size + iterator->next->size + iterator->size;
+                //new_header->chksum = new_header->prev->size + new_header->next->size + new_header->size;
+                correct_validation(iterator,1, new_header);
             }
             else{
                 iterator->size = (int)size; //FENCE_SIZE*2 + sizeof(block) ; // TODO +sizeof(block) and FENCE_SIZE as well or not?
                 iterator->block_size = -iterator->block_size;
 
                 //val
-                correct_validation(iterator,0);
+                //iterator->chksum = iterator->prev->size + iterator->next->size + iterator->size;
+                correct_validation(iterator,0,NULL);
             }
 
             unsigned char *ret_val = (unsigned char*)iterator + sizeof(block) + FENCE_SIZE;
@@ -276,8 +384,11 @@ void coalesce(void){
     iterator = iterator->next;
     while(iterator != NULL){
         if(iterator->prev->size < 0 && iterator->size < 0){
-            iterator->prev->size = iterator->prev->size + iterator->size;
+            iterator->prev->size = iterator->prev->block_size + iterator->block_size - sizeof(block);
+            iterator->prev->block_size = iterator->prev->block_size + iterator->block_size - sizeof(block);
             iterator->prev->next = iterator->next;
+            iterator->next->prev = iterator->prev;
+            correct_validation(iterator->prev,0,NULL);
         }
         iterator = iterator->next;
     }
@@ -291,10 +402,10 @@ void heap_free(void *memblock){
     block *header = (block *)((unsigned char *)memblock - sizeof(block) - FENCE_SIZE);
     header->size = -(header->block_size);
     header->block_size = -(header->block_size);
+    correct_validation(header,0,NULL);
     coalesce();
 }
 int heap_validate(void){
-
     if(start_brk == NULL)
         return 2;
 
@@ -309,10 +420,10 @@ int heap_validate(void){
         new_checksum = iterator->prev->size + iterator->next->size + iterator->size;
         if(new_checksum != iterator->chksum)
             return 3;
-        if(*(int *)(iterator+1) != 0){
+        if(*(int *)(iterator+1) != 0 && iterator->size > 0){
             return 1;
         }
-        if(*(int*)((unsigned char*)iterator + iterator->size + sizeof(block)) != 0){
+        if(iterator->size > 0 && *(int*)((unsigned char*)iterator + iterator->size + sizeof(block) + FENCE_SIZE) != 0){
             return 1;
         }
         iterator = iterator->next;
@@ -362,11 +473,11 @@ enum pointer_type_t get_pointer_type(const void* pointer){
         if(iterator->size < 0 && (unsigned char *)pointer >= ((unsigned char *)iterator + sizeof(block)) && (unsigned char *)pointer <= ((unsigned char *)iterator + sizeof(block) - iterator->block_size))
             return pointer_unallocated;
 
-        if((unsigned char *)pointer >= (unsigned char*)iterator && (unsigned char *)pointer <= ((unsigned char*)iterator+sizeof(block))){
+        if((unsigned char *)pointer >= (unsigned char*)iterator && (unsigned char *)pointer < ((unsigned char*)iterator+sizeof(block))){
             return pointer_control_block;
         }
 
-        if(((unsigned char *)pointer >= ((unsigned char*)iterator+sizeof(block)) && (unsigned char *)pointer < ((unsigned char*)iterator+sizeof(block)+FENCE_SIZE)) || ((unsigned char *)pointer >= ((unsigned char*)iterator+sizeof(block)+FENCE_SIZE+iterator->size) && (unsigned char *)pointer <= ((unsigned char*)iterator+sizeof(block)+2*FENCE_SIZE+iterator->size)))
+        if(((unsigned char *)pointer >= ((unsigned char*)iterator+sizeof(block)) && (unsigned char *)pointer < ((unsigned char*)iterator+sizeof(block)+FENCE_SIZE)) || ((unsigned char *)pointer >= ((unsigned char*)iterator+sizeof(block)+FENCE_SIZE+iterator->size) && (unsigned char *)pointer < ((unsigned char*)iterator+sizeof(block)+2*FENCE_SIZE+iterator->size)))
             return pointer_inside_fences;
 
         if(((unsigned char *)pointer == ((unsigned char*)iterator + sizeof(block) + FENCE_SIZE)))

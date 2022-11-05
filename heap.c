@@ -76,7 +76,7 @@ uint32_t murmurhash (const char *key, uint32_t len, uint32_t seed) {
     h *= 0xc2b2ae35;
     h ^= (h >> 16);
 
-    return h;
+    return (long long)h;
 }
 
 int heap_setup(void){
@@ -101,10 +101,15 @@ int heap_setup(void){
     front_guard->next = usable_block;
     front_guard->prev = NULL;
 
+    usable_block->chksum = murmurhash((const char*)usable_block, sizeof(block) - sizeof(long long), 0);
+    front_guard->chksum = murmurhash((const char*)front_guard, sizeof(block) - sizeof(long long), 0);
+    tail_guard->chksum = murmurhash((const char*)tail_guard, sizeof(block) - sizeof(long long), 0);
+
+    /*
     usable_block->chksum = front_guard->size + tail_guard->size + usable_block->size;
     front_guard->chksum = usable_block->size;
     tail_guard->chksum = usable_block->size;
-
+*/
     return 0;
 }
 
@@ -119,43 +124,47 @@ void heap_clean(void){
     start_brk = NULL;
 }
 
-long long simple_hash(block *iterator, int isNull){
-    long long checksum = 0;
-    if(isNull){
-        block *previous = iterator->prev, *cur = iterator, *next = iterator->next;
-        checksum = (previous->size + &previous->next / 10000 + previous->prev / 10000 + previous->block_size);
-    }
-    else{
-
-    }
-}
-
 void correct_validation(block *iterator, int with_new_header, block *new_header){
-    iterator->chksum = (iterator->prev->size) + (iterator->next->size) + (iterator->size);
+    //iterator->chksum = (iterator->prev->size) + (iterator->next->size) + (iterator->size);
+    iterator->chksum = murmurhash((const char *)iterator, sizeof(block) - sizeof(long long), 0);
     if(with_new_header) {
-        new_header->chksum = new_header->prev->size + new_header->next->size + new_header->size;
+        //new_header->chksum = new_header->prev->size + new_header->next->size + new_header->size;
+        new_header->chksum = murmurhash((const char *)new_header, sizeof(block) - sizeof(long long), 0);
+        /*
         if (iterator->prev->prev != NULL) {
             iterator->prev->chksum = iterator->prev->prev->size + iterator->size + iterator->prev->size;
         } else {
             iterator->prev->chksum = iterator->size + iterator->prev->size; //size = 0
         }
+         */
+        iterator->prev->chksum = murmurhash((const char *)iterator->prev, sizeof(block) - sizeof(long long), 0);
+        /*
         if (iterator->next->next->next != NULL) {
             iterator->next->next->chksum = iterator->next->size + iterator->next->next->next->size + iterator->next->next->size;;
         } else {
             iterator->next->next->chksum = iterator->next->size + iterator->next->next->size;
         }
+         */
+        iterator->next->next->chksum = murmurhash((const char*)iterator->next->next, sizeof(block) - sizeof(long long), 0);
+
     }
     else{
+        iterator->prev->chksum = murmurhash((const char*)iterator->prev, sizeof(block) - sizeof(long long), 0);
+        /*
         if (iterator->prev->prev != NULL) {
             iterator->prev->chksum = iterator->prev->prev->size + iterator->size + iterator->prev->size;
         } else {
             iterator->prev->chksum = iterator->size + iterator->prev->size;
         }
+        */
+        iterator->next->chksum = murmurhash((const char*)iterator->next, sizeof(block) - sizeof(long long), 0);
+        /*
         if (iterator->next->next != NULL) {
             iterator->next->chksum = iterator->size + iterator->next->next->size + iterator->next->size;
         } else {
             iterator->next->chksum = iterator->size + iterator->next->size;
         }
+         */
     }
 }
 int extend_heap(void){
@@ -411,13 +420,13 @@ int heap_validate(void){
 
     block *iterator = (block *)start_brk;
     long long new_checksum;
-    new_checksum = iterator->next->size + iterator->size;
+    new_checksum = murmurhash((const char *)iterator, sizeof(block) - sizeof(long long), 0);
     if(new_checksum != iterator->chksum)
         return 3;
     iterator = iterator->next;
 
     while(iterator->next != NULL){
-        new_checksum = iterator->prev->size + iterator->next->size + iterator->size;
+        new_checksum = murmurhash((const char*)iterator, sizeof(block) - sizeof(long long), 0);
         if(new_checksum != iterator->chksum)
             return 3;
         if(*(int *)(iterator+1) != 0 && iterator->size > 0){
@@ -429,7 +438,7 @@ int heap_validate(void){
         iterator = iterator->next;
     }
 
-    new_checksum = iterator->prev->size + iterator->size;
+    new_checksum = murmurhash((const void *)iterator, sizeof(block) - sizeof(long long), 0);
     if(new_checksum != iterator->chksum)
         return 3;
 

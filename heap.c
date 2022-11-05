@@ -324,43 +324,55 @@ void *extend_block(void *memblock, size_t count, block *current_block){
 
 void *reduce_padding(void *memblock, size_t count, block *current_block){
     unsigned char *char_iterator = (unsigned char *)memblock;
-    char_iterator+=count;
-    *char_iterator = 0;
-    current_block->size = (int)count; //block_size stays the same
+    char_iterator += sizeof(block) + FENCE_SIZE;
+    char_iterator += count;
+    memset(char_iterator, 0, FENCE_SIZE);
+    current_block->size = (int)count;//block_size stays the same
+    correct_validation(current_block, 0, NULL);
     return memblock;
 }
 void *shrink_block(void *memblock, size_t count, block *current_block){
     unsigned char *char_iterator = (unsigned char *)memblock;
+    //char_iterator += sizeof(block) + FENCE_SIZE;
     char_iterator += count;
 
-    *char_iterator = 0;
+    memset(char_iterator, 0, FENCE_SIZE);
     //TODO What aboud padding? (header)(fence)(3 bytes of user data)(fence)(7 bytes of padding?)(new_header) will it be already aligned?
 
     //current_block->block_size = 2*FENCE_SIZE + ALIGN1(current_block->size); // block size will stay the same?
     current_block->size = (int)count;
-    return (unsigned char *)current_block + FENCE_SIZE;
+    correct_validation(current_block, 0, NULL);
+    return (unsigned char *)current_block + sizeof(block) + FENCE_SIZE;
 }
 
 void *heap_realloc(void *memblock, size_t count){
-    if(count <= 0)
+    if(heap_validate() != 0)
         return NULL;
-
+    if(count == 0){
+        heap_free(memblock);
+        return NULL;
+    }
+    if((int)count < 0)
+        return NULL;
+    if(memblock == NULL){
+        return heap_malloc(count);
+    }
+    if(get_pointer_type(memblock) != pointer_valid)
+        return NULL;
     //validate the heap integrity first, return NULL if corrupted
 
-    if(memblock == NULL){
-        return malloc(count);
-    }
+
 
     block *current_block = (block *)((unsigned char *)memblock - sizeof(block) - FENCE_SIZE);
 
-    if((unsigned long long)current_block->size == count) //ALIGN1(count) + FENCE_SIZE*2 + sizeof(block)?
+    if(current_block->size == (int)count) //ALIGN1(count) + FENCE_SIZE*2 + sizeof(block)?
         return memblock;
 
-    else if((unsigned long long)current_block->size > count){
+    else if(current_block->size > (int)count){
         return shrink_block(memblock, count, current_block);
     }
-    else if((unsigned long long)current_block->size < count){ //remember that you can reduce padding as well
-        if(ALIGN1(current_block->size) >= (int)count){
+    else if(current_block->size < (int)count){ //remember that you can reduce padding as well
+        if(current_block->block_size >= (int)count){
             return reduce_padding(memblock, count, current_block);
         }
         //no space for new size in the current block, check if adjacent block is free and of enough size
@@ -432,7 +444,7 @@ int heap_validate(void){
         if(*(int *)(iterator+1) != 0 && iterator->size > 0){
             return 1;
         }
-        if(iterator->size > 0 && *(int*)((unsigned char*)iterator + iterator->size + sizeof(block) + FENCE_SIZE) != 0){
+        if(iterator->size > 0 && (*(int*)((unsigned char*)iterator + iterator->size + sizeof(block) + FENCE_SIZE)) != 0){
             return 1;
         }
         iterator = iterator->next;

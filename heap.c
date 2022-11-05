@@ -301,24 +301,45 @@ void *heap_calloc(size_t number, size_t size){
 }
 
 /* REALLOC UTILS */
-void *extend_block(void *memblock, size_t count, block *current_block){
+void *extend_block_new_header(void *memblock, size_t count, block *current_block){
 
     unsigned char *char_iterator = (unsigned char *)memblock;
     unsigned char *destination = ((unsigned char *)memblock) + FENCE_SIZE + ALIGN1(count);
     memcpy(destination, current_block->next, sizeof(block));
+
     ((block*)(destination))->prev = current_block;
     ((block*)(destination))->next = current_block->next->next;
     current_block->next = ((block*)(destination));
 
+    /*
     ((block*)(destination))->size = current_block->next->block_size + (int)sizeof(block) + 2*FENCE_SIZE + (int)ALIGN1(count);
     ((block*)(destination))->block_size = current_block->next->block_size + (int)sizeof(block) + 2*FENCE_SIZE + (int)ALIGN1(count);
+    */
+
+    ((block*)(destination))->size = current_block->next->block_size + (ALIGN1(count) - current_block->block_size - 2*FENCE_SIZE);
+    ((block*)(destination))->block_size = current_block->next->block_size + (ALIGN1(count) - current_block->block_size - 2*FENCE_SIZE);
 
 
     char_iterator += count;
-    *char_iterator = 0;
+    memset(char_iterator, 0, FENCE_SIZE);
 
     current_block->block_size = 2 * FENCE_SIZE + (int) ALIGN1(count);
     current_block->size = (int)count;
+    correct_validation(current_block, 0, NULL);
+    return memblock;
+}
+void *extend_block_no_header(void *memblock, size_t count, block *current_block){
+    unsigned char *char_iterator = (unsigned char *)memblock;
+
+    current_block->block_size = current_block->block_size - current_block->next->block_size + sizeof(block);
+    current_block->size = (int)count;
+
+    char_iterator += count;
+    memset(char_iterator, 0, FENCE_SIZE);
+
+    current_block->next = current_block->next->next;
+    current_block->next->prev = current_block;
+    correct_validation(current_block, 0, NULL);
     return memblock;
 }
 
@@ -378,15 +399,34 @@ void *heap_realloc(void *memblock, size_t count){
         //no space for new size in the current block, check if adjacent block is free and of enough size
         if(current_block->next->block_size < 0)
         {
-            if (-current_block->next->block_size + current_block->block_size - sizeof(block) - 2 * FENCE_SIZE >= count)
+            if (-current_block->next->block_size + current_block->block_size - 4 * FENCE_SIZE - 2 >= (int)ALIGN1(count)) // -sizeof(block)?
             {
-                return extend_block(memblock, count, current_block);
+                return extend_block_new_header(memblock, count, current_block);
             }
             //check if the next block is a plug indicating end of heap
             else if(current_block->next->next->size == 0){
-                if(extend_heap() == -1)
+                while(-current_block->next->block_size < (int)ALIGN1(count) - current_block->block_size){
+                    if(extend_heap() == -1){
+                        return NULL;
+                    }
+                }
+                heap_free(memblock);
+                unsigned char *ret = heap_malloc(count);
+                if(ret == NULL)
                     return NULL;
-                return extend_block(memblock, count, current_block);
+                memcpy(ret, memblock, current_block->size);
+                return ret;
+            }
+            else if(-current_block->next->block_size + current_block->block_size + (int)sizeof(block) >= (int)ALIGN1(count)){
+                return extend_block_no_header(memblock, count, current_block);
+            }
+            else{
+                unsigned char *ret = heap_malloc(count);
+                if(ret == NULL)
+                    return NULL;
+                memcpy(ret, memblock, current_block->size);
+                heap_free(memblock);
+                return ret;
             }
         }
         else{
@@ -504,7 +544,7 @@ enum pointer_type_t get_pointer_type(const void* pointer){
         if(((unsigned char *)pointer == ((unsigned char*)iterator + sizeof(block) + FENCE_SIZE)))
             return pointer_valid;
 
-        if(((unsigned char *)pointer > ((unsigned char*)iterator) + sizeof(block) + FENCE_SIZE) && ((unsigned char *)pointer <= (unsigned char*)iterator) + sizeof(block) + FENCE_SIZE + iterator->size)
+        if(((unsigned char *)pointer > ((unsigned char*)iterator) + sizeof(block) + FENCE_SIZE) && ((unsigned char *)pointer <= ((unsigned char*)iterator + sizeof(block) + FENCE_SIZE + iterator->size)))
             return pointer_inside_data_block;
 
         return pointer_unallocated;

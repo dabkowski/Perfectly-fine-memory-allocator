@@ -2,15 +2,13 @@
 #define ALOKATOR_HEAP_H
 
 #include <stdlib.h>
+#include <stdint.h>
 
 #define PAGE_SIZE 4096
 #define FENCE_SIZE 4
 
-
 #define ALIGNMENT 4
 #define ALIGN1(x) (((x) & ~(ALIGNMENT - 1)) + ALIGNMENT * !!((x) & (ALIGNMENT -1)))
-#define ALIGN2(x) (((x) + (ALIGNMENT - 1)) & ~(ALIGNMENT -1))
-
 
 typedef struct memblock_t {
     struct memblock_t *next;
@@ -41,7 +39,14 @@ void *heap_calloc(size_t number, size_t size);
 void *heap_realloc(void *memblock, size_t count);
 void heap_free(void *memblock);
 int heap_validate(void);
-void *heap_malloc_aligned(size_t count);
-void *heap_calloc_aligned(size_t number, size_t size);
-void *heap_realloc_aligned(void *memblock, size_t size);
+uint32_t murmurhash (const char *key, uint32_t len, uint32_t seed);
+void correct_validation(block *iterator, int with_new_header, block *new_header);
+int extend_heap(void);
+void *first_free(block *iterator, size_t size);
+void *extend_block_new_header(void *memblock, size_t count, block *current_block);
+void *extend_block_no_header(void *memblock, size_t count, block *current_block);
+void *reduce_padding(void *memblock, size_t count, block *current_block);
+void *shrink_block(void *memblock, size_t count, block *current_block);
+void coalesce(void);
+
 #endif //ALOKATOR_HEAP_H

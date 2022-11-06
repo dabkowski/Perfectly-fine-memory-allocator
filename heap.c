@@ -8,14 +8,8 @@
 static void* start_brk = NULL;
 
 
-/*The convention will be to treat the header size as only containing the size of the actual user data;
- *
- *
- *
- *
- * */
+/* The convention will be to treat header size as only containing the size of the actual user data and block_size containing size of the whole block: FENCE USER_DATA FENCE PADDING; */
 
-// TODO Should each block size include size of the fences and next header or only user data?
 
 uint32_t murmurhash (const char *key, uint32_t len, uint32_t seed) {
     uint32_t c1 = 0xcc9e2d51;
@@ -26,28 +20,24 @@ uint32_t murmurhash (const char *key, uint32_t len, uint32_t seed) {
     uint32_t n = 0xe6546b64;
     uint32_t h = 0;
     uint32_t k = 0;
-    uint8_t *d = (uint8_t *) key; // 32 bit extract from `key'
+    uint8_t *d = (uint8_t *) key;
     const uint32_t *chunks = NULL;
-    const uint8_t *tail = NULL; // tail - last 8 bytes
+    const uint8_t *tail = NULL;
     int i = 0;
-    int l = len / 4; // chunk length
+    int l = len / 4;
 
     h = seed;
 
-    chunks = (const uint32_t *) (d + l * 4); // body
-    tail = (const uint8_t *) (d + l * 4); // last 8 byte chunk of `key'
+    chunks = (const uint32_t *) (d + l * 4);
+    tail = (const uint8_t *) (d + l * 4);
 
-    // for each 4 byte chunk of `key'
     for (i = -l; i != 0; ++i) {
-        // next 4 byte chunk of `key'
         k = chunks[i];
 
-        // encode next 4 byte chunk of `key'
         k *= c1;
         k = (k << r1) | (k >> (32 - r1));
         k *= c2;
 
-        // append to hash
         h ^= k;
         h = (h << r2) | (h >> (32 - r2));
         h = h * m + n;
@@ -55,8 +45,7 @@ uint32_t murmurhash (const char *key, uint32_t len, uint32_t seed) {
 
     k = 0;
 
-    // remainder
-    switch (len & 3) { // `len % 4'
+    switch (len & 3) {
         case 3: k ^= (tail[2] << 16);
         case 2: k ^= (tail[1] << 8);
 
@@ -105,11 +94,6 @@ int heap_setup(void){
     front_guard->chksum = murmurhash((const char*)front_guard, sizeof(block) - sizeof(long long), 0);
     tail_guard->chksum = murmurhash((const char*)tail_guard, sizeof(block) - sizeof(long long), 0);
 
-    /*
-    usable_block->chksum = front_guard->size + tail_guard->size + usable_block->size;
-    front_guard->chksum = usable_block->size;
-    tail_guard->chksum = usable_block->size;
-*/
     return 0;
 }
 
@@ -125,46 +109,16 @@ void heap_clean(void){
 }
 
 void correct_validation(block *iterator, int with_new_header, block *new_header){
-    //iterator->chksum = (iterator->prev->size) + (iterator->next->size) + (iterator->size);
     iterator->chksum = murmurhash((const char *)iterator, sizeof(block) - sizeof(long long), 0);
     if(with_new_header) {
-        //new_header->chksum = new_header->prev->size + new_header->next->size + new_header->size;
         new_header->chksum = murmurhash((const char *)new_header, sizeof(block) - sizeof(long long), 0);
-        /*
-        if (iterator->prev->prev != NULL) {
-            iterator->prev->chksum = iterator->prev->prev->size + iterator->size + iterator->prev->size;
-        } else {
-            iterator->prev->chksum = iterator->size + iterator->prev->size; //size = 0
-        }
-         */
         iterator->prev->chksum = murmurhash((const char *)iterator->prev, sizeof(block) - sizeof(long long), 0);
-        /*
-        if (iterator->next->next->next != NULL) {
-            iterator->next->next->chksum = iterator->next->size + iterator->next->next->next->size + iterator->next->next->size;;
-        } else {
-            iterator->next->next->chksum = iterator->next->size + iterator->next->next->size;
-        }
-         */
         iterator->next->next->chksum = murmurhash((const char*)iterator->next->next, sizeof(block) - sizeof(long long), 0);
 
     }
     else{
         iterator->prev->chksum = murmurhash((const char*)iterator->prev, sizeof(block) - sizeof(long long), 0);
-        /*
-        if (iterator->prev->prev != NULL) {
-            iterator->prev->chksum = iterator->prev->prev->size + iterator->size + iterator->prev->size;
-        } else {
-            iterator->prev->chksum = iterator->size + iterator->prev->size;
-        }
-        */
         iterator->next->chksum = murmurhash((const char*)iterator->next, sizeof(block) - sizeof(long long), 0);
-        /*
-        if (iterator->next->next != NULL) {
-            iterator->next->chksum = iterator->size + iterator->next->next->size + iterator->next->size;
-        } else {
-            iterator->next->chksum = iterator->size + iterator->next->size;
-        }
-         */
     }
 }
 int extend_heap(void){
@@ -176,7 +130,6 @@ int extend_heap(void){
     while(iterator->next != NULL){
         iterator = iterator->next;
     }
-
 
 
     ssize_t placement = (unsigned char *)custom_sbrk(0) - (unsigned char *)start_brk - (sizeof(block));
@@ -208,18 +161,15 @@ int extend_heap(void){
         new_plug->size = 0;
 
         iterator->prev->next = new_plug;
-        iterator->prev->size = iterator->prev->size - PAGE_SIZE + sizeof(block); // - or +?
-        iterator->prev->block_size = iterator->prev->size; // - or +?
+        iterator->prev->size = iterator->prev->size - PAGE_SIZE;
+        iterator->prev->block_size = iterator->prev->size;
 
         block *before_end = iterator->prev;
-        //new_plug->chksum = new_plug->prev->size;
-        //before_end->chksum = before_end->prev->size + before_end->size + before_end->next->size;
         correct_validation(before_end, 0, NULL);
     }
 
     return 0;
 }
-
 
 
 void *first_free(block *iterator, size_t size){
@@ -238,7 +188,6 @@ void *first_free(block *iterator, size_t size){
 
             char_iterator += ALIGN1(size) - size;
 
-            //block new_header = {.prev = iterator, .next = iterator->next, .size = -(int)(iterator->size - sizeof(block) - FENCE_SIZE*2 - ALIGN1(size) - size) , .block_size = -(int)(iterator->size - sizeof(block) - FENCE_SIZE*2 - ALIGN1(size) - size)};
             if(-iterator->size >= (int)(ALIGN1(size) + FENCE_SIZE + FENCE_SIZE + (sizeof(block) + FENCE_SIZE + FENCE_SIZE + 1))) {
                 block *new_header = ((block *) char_iterator);
 
@@ -250,20 +199,14 @@ void *first_free(block *iterator, size_t size){
 
                 iterator->next->prev = new_header;
                 iterator->next = new_header;
-                iterator->size = (int)size; //FENCE_SIZE*2 + sizeof(block) ; // TODO +sizeof(block) and FENCE_SIZE as well or not?
+                iterator->size = (int)size;
                 iterator->block_size = ALIGN1(size) + FENCE_SIZE*2;
 
-                //Validation add
-                //iterator->chksum = iterator->prev->size + iterator->next->size + iterator->size;
-                //new_header->chksum = new_header->prev->size + new_header->next->size + new_header->size;
                 correct_validation(iterator,1, new_header);
             }
             else{
-                iterator->size = (int)size; //FENCE_SIZE*2 + sizeof(block) ; // TODO +sizeof(block) and FENCE_SIZE as well or not?
+                iterator->size = (int)size;
                 iterator->block_size = -iterator->block_size;
-
-                //val
-                //iterator->chksum = iterator->prev->size + iterator->next->size + iterator->size;
                 correct_validation(iterator,0,NULL);
             }
 
@@ -275,7 +218,7 @@ void *first_free(block *iterator, size_t size){
     return NULL;
 }
 
-void *heap_malloc(size_t size){ //check if heap hasnt been violated TODO
+void *heap_malloc(size_t size){
     if(size <= 0)
         return NULL;
     if(heap_validate() != 0)
@@ -288,7 +231,6 @@ void *heap_malloc(size_t size){ //check if heap hasnt been violated TODO
             return NULL;
         res = first_free(iterator, size);
     }
-    //res = first_free(iterator, size);
     return res;
 }
 void *heap_calloc(size_t number, size_t size){
@@ -300,32 +242,26 @@ void *heap_calloc(size_t number, size_t size){
     return ret;
 }
 
-/* REALLOC UTILS */
 void *extend_block_new_header(void *memblock, size_t count, block *current_block){
 
     unsigned char *char_iterator = (unsigned char *)memblock;
     unsigned char *destination = ((unsigned char *)memblock) + FENCE_SIZE + ALIGN1(count);
     memcpy(destination, current_block->next, sizeof(block));
 
-    ((block*)(destination))->prev = current_block;
-    ((block*)(destination))->next = current_block->next->next;
-    current_block->next = ((block*)(destination));
+    block *new_header = (block*)(destination);
 
-    /*
-    ((block*)(destination))->size = current_block->next->block_size + (int)sizeof(block) + 2*FENCE_SIZE + (int)ALIGN1(count);
-    ((block*)(destination))->block_size = current_block->next->block_size + (int)sizeof(block) + 2*FENCE_SIZE + (int)ALIGN1(count);
-    */
+    current_block->next = new_header;
+    current_block->next->next->prev = new_header;
 
-    ((block*)(destination))->size = current_block->next->block_size + (ALIGN1(count) - current_block->block_size - 2*FENCE_SIZE);
-    ((block*)(destination))->block_size = current_block->next->block_size + (ALIGN1(count) - current_block->block_size - 2*FENCE_SIZE);
-
+    new_header->size = -(-current_block->next->block_size + current_block->block_size - (int)ALIGN1(count) - 2*FENCE_SIZE);
+    new_header->block_size = -(-current_block->next->block_size + current_block->block_size - (int)ALIGN1(count) - 2*FENCE_SIZE);
 
     char_iterator += count;
     memset(char_iterator, 0, FENCE_SIZE);
 
     current_block->block_size = 2 * FENCE_SIZE + (int) ALIGN1(count);
     current_block->size = (int)count;
-    correct_validation(current_block, 0, NULL);
+    correct_validation(current_block, 1, new_header);
     return memblock;
 }
 void *extend_block_no_header(void *memblock, size_t count, block *current_block){
@@ -345,101 +281,22 @@ void *extend_block_no_header(void *memblock, size_t count, block *current_block)
 
 void *reduce_padding(void *memblock, size_t count, block *current_block){
     unsigned char *char_iterator = (unsigned char *)memblock;
-    char_iterator += sizeof(block) + FENCE_SIZE;
     char_iterator += count;
     memset(char_iterator, 0, FENCE_SIZE);
-    current_block->size = (int)count;//block_size stays the same
+    current_block->size = (int)count; //block_size stays the same
     correct_validation(current_block, 0, NULL);
     return memblock;
 }
 void *shrink_block(void *memblock, size_t count, block *current_block){
     unsigned char *char_iterator = (unsigned char *)memblock;
-    //char_iterator += sizeof(block) + FENCE_SIZE;
     char_iterator += count;
 
     memset(char_iterator, 0, FENCE_SIZE);
-    //TODO What aboud padding? (header)(fence)(3 bytes of user data)(fence)(7 bytes of padding?)(new_header) will it be already aligned?
 
-    //current_block->block_size = 2*FENCE_SIZE + ALIGN1(current_block->size); // block size will stay the same?
     current_block->size = (int)count;
     correct_validation(current_block, 0, NULL);
     return (unsigned char *)current_block + sizeof(block) + FENCE_SIZE;
 }
-
-void *heap_realloc(void *memblock, size_t count){
-    if(heap_validate() != 0)
-        return NULL;
-    if(count == 0){
-        heap_free(memblock);
-        return NULL;
-    }
-    if((int)count < 0)
-        return NULL;
-    if(memblock == NULL){
-        return heap_malloc(count);
-    }
-    if(get_pointer_type(memblock) != pointer_valid)
-        return NULL;
-    //validate the heap integrity first, return NULL if corrupted
-
-
-
-    block *current_block = (block *)((unsigned char *)memblock - sizeof(block) - FENCE_SIZE);
-
-    if(current_block->size == (int)count) //ALIGN1(count) + FENCE_SIZE*2 + sizeof(block)?
-        return memblock;
-
-    else if(current_block->size > (int)count){
-        return shrink_block(memblock, count, current_block);
-    }
-    else if(current_block->size < (int)count){ //remember that you can reduce padding as well
-        if(current_block->block_size >= (int)count){
-            return reduce_padding(memblock, count, current_block);
-        }
-        //no space for new size in the current block, check if adjacent block is free and of enough size
-        if(current_block->next->block_size < 0)
-        {
-            if (-current_block->next->block_size + current_block->block_size - 4 * FENCE_SIZE - 2 >= (int)ALIGN1(count)) // -sizeof(block)?
-            {
-                return extend_block_new_header(memblock, count, current_block);
-            }
-            //check if the next block is a plug indicating end of heap
-            else if(current_block->next->next->size == 0){
-                while(-current_block->next->block_size < (int)ALIGN1(count) - current_block->block_size){
-                    if(extend_heap() == -1){
-                        return NULL;
-                    }
-                }
-                heap_free(memblock);
-                unsigned char *ret = heap_malloc(count);
-                if(ret == NULL)
-                    return NULL;
-                memcpy(ret, memblock, current_block->size);
-                return ret;
-            }
-            else if(-current_block->next->block_size + current_block->block_size + (int)sizeof(block) >= (int)ALIGN1(count)){
-                return extend_block_no_header(memblock, count, current_block);
-            }
-            else{
-                unsigned char *ret = heap_malloc(count);
-                if(ret == NULL)
-                    return NULL;
-                memcpy(ret, memblock, current_block->size);
-                heap_free(memblock);
-                return ret;
-            }
-        }
-        else{
-            unsigned char *ret = malloc(count);
-            if(ret == NULL)
-                return NULL;
-            memcpy(ret, memblock, current_block->size);
-            return ret;
-        }
-    }
-    return NULL;
-}
-
 void coalesce(void){
     block *iterator = (block *)start_brk;
     iterator = iterator->next;
@@ -455,6 +312,93 @@ void coalesce(void){
     }
 
 }
+
+void *heap_realloc(void *memblock, size_t count){
+
+    if(heap_validate() != 0)
+        return NULL;
+    if(count == 0){
+        heap_free(memblock);
+        return NULL;
+    }
+    if((int)count < 0)
+        return NULL;
+    if(memblock == NULL){
+        return heap_malloc(count);
+    }
+    if(get_pointer_type(memblock) != pointer_valid)
+        return NULL;
+
+    block *current_block = (block *)((unsigned char *)memblock - sizeof(block) - FENCE_SIZE);
+
+    if(current_block->size == (int)count)
+        return memblock;
+
+    else if(current_block->size > (int)count){
+        return shrink_block(memblock, count, current_block);
+    }
+    else if(current_block->size < (int)count){
+        if(current_block->block_size >= (int)ALIGN1(count) + 2*FENCE_SIZE){
+            return reduce_padding(memblock, count, current_block);
+        }
+        if(current_block->next->block_size < 0)
+        {
+            if (-current_block->next->block_size + current_block->block_size + (int)sizeof(block)  >= ((int)ALIGN1(count)) + 4*FENCE_SIZE + (int)sizeof(block) + 2)
+            {
+                return extend_block_new_header(memblock, count, current_block);
+            }
+            else if(current_block->next->next->size == 0){
+                while(-current_block->next->block_size + (int)sizeof(block) + current_block->block_size < (int)ALIGN1(count) + 2*FENCE_SIZE){
+                    if(extend_heap() == -1){
+                        return NULL;
+                    }
+                }
+                heap_free(memblock);
+                unsigned char *ret = heap_malloc(count);
+                if(ret == NULL)
+                    return NULL;
+                return ret;
+            }
+            else if(-current_block->next->block_size + current_block->block_size + (int)sizeof(block) >= ((int)ALIGN1(count) + 2*FENCE_SIZE)){
+                return extend_block_no_header(memblock, count, current_block);
+            }
+            else{
+                block *temporary_block = current_block;
+                while(temporary_block->next->next != NULL) temporary_block = temporary_block->next;
+
+                while(-temporary_block->block_size < ((int)ALIGN1(count) +4*FENCE_SIZE + (int)sizeof(block) + 2)){
+                    if(extend_heap() == -1){
+                        return NULL;
+                    }
+                }
+                unsigned char *ret = heap_malloc(count);
+                if(ret == NULL)
+                    return NULL;
+                memcpy(ret, memblock, current_block->size);
+                heap_free(memblock);
+                return ret;
+            }
+        }
+        else{
+            block *temporary_block = current_block;
+            while(temporary_block->next->next != NULL) temporary_block = temporary_block->next;
+
+            while(-temporary_block->block_size < ((int)ALIGN1(count))){
+                if(extend_heap() == -1){
+                    return NULL;
+                }
+            }
+            unsigned char *ret = heap_malloc(count);
+            if(ret == NULL)
+                return NULL;
+            memcpy(ret, memblock, current_block->size);
+            heap_free(memblock);
+            return ret;
+        }
+    }
+    return NULL;
+}
+
 void heap_free(void *memblock){
     if(get_pointer_type((unsigned char*)memblock) != pointer_valid)
         return ;
@@ -497,15 +441,7 @@ int heap_validate(void){
     return 0;
 
 }
-void *heap_malloc_aligned(size_t count){
-    return 0;
-}
-void *heap_calloc_aligned(size_t number, size_t size){
-    return 0;
-}
-void *heap_realloc_aligned(void *memblock, size_t size){
-    return 0;
-}
+
 enum pointer_type_t get_pointer_type(const void* pointer){
 
         if(pointer == NULL)
@@ -514,7 +450,6 @@ enum pointer_type_t get_pointer_type(const void* pointer){
         int ret = heap_validate();
         if(ret == 1 || ret == 2 || ret == 3)
             return pointer_heap_corrupted;
-
 
         block *iterator = start_brk;
 

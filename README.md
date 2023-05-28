@@ -24,7 +24,7 @@ The memory allocator offers the following functionalities:
 * **Word-Aligned Memory**: All memory allocation functions (`heap_malloc`, `heap_calloc`, and `heap_realloc`) return memory
   addresses that are multiples of the machine word size.
 
-#Usage Examples
+# Usage Examples
 
 Below are some usage examples to help you get started with the custom memory allocator:
 
